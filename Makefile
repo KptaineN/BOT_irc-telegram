@@ -1,19 +1,37 @@
+# ============================================================
+# Telegram <-> IRC Bridge
+# ============================================================
+
 PYTHON          := .venv/bin/python
 PIP             := .venv/bin/pip
 VENV            := .venv
+
 BRIDGE          := bridge.py
+BRIDGE_ABS      := $(abspath $(BRIDGE))
 
 IRC_DIR         := IRC
 IRC_BIN         := $(IRC_DIR)/ircserv
 IRC_PORT        := 6667
 IRC_PASSWORD    := 42
+
 IRC_PID         := .ircserv.pid
+IRC_LOG         := ircserv.log
 
 COMPOSE         := docker compose
+DOCKER_SERVICE  := bridge
 
-.PHONY: all help setup check irc build-irc start-irc stop-irc \
-        bridge run local docker build up down restart logs \
+# Small delay before starting the bridge
+START_DELAY     := 3
+
+
+.PHONY: all help check setup \
+        build-irc start-irc stop-irc irc \
+        check-local-bridge check-docker-bridge \
+        bridge run local \
+        docker-build docker-up docker-down docker logs \
+        status stop restart \
         clean fclean re
+
 
 # ============================================================
 # DEFAULT
@@ -31,37 +49,41 @@ help:
 	@echo "Telegram <-> IRC Bridge"
 	@echo "========================"
 	@echo ""
-	@echo "Main commands:"
-	@echo "  make           Build/start IRC server and launch bridge"
-	@echo "  make run       Same as make"
-	@echo "  make help      Show this help"
+	@echo "Main:"
+	@echo "  make             Start IRC server if needed + local bridge"
+	@echo "  make run         Same as make"
+	@echo "  make status      Show IRC / local bridge / Docker state"
+	@echo "  make stop        Stop services started by Make/Docker"
+	@echo "  make restart     Restart local stack"
 	@echo ""
-	@echo "Local environment:"
-	@echo "  make setup     Create .venv and install dependencies"
-	@echo "  make bridge    Launch only the Python bridge"
+	@echo "Manual mode:"
+	@echo "  ./IRC/ircserv $(IRC_PORT) <password>"
+	@echo "  ./start"
 	@echo ""
-	@echo "IRC server:"
-	@echo "  make irc       Build and start IRC server"
-	@echo "  make build-irc Build IRC server"
-	@echo "  make start-irc Start IRC server"
-	@echo "  make stop-irc  Stop IRC server"
+	@echo "IRC:"
+	@echo "  make build-irc   Compile IRC server"
+	@echo "  make start-irc   Start IRC server if necessary"
+	@echo "  make stop-irc    Stop IRC server started by Make"
+	@echo ""
+	@echo "Local bridge:"
+	@echo "  make setup       Create .venv + install dependencies"
+	@echo "  make bridge      Start bridge only"
 	@echo ""
 	@echo "Docker:"
-	@echo "  make build     Build Docker image"
-	@echo "  make up        Start Docker bridge"
-	@echo "  make docker    Build and start Docker bridge"
-	@echo "  make logs      Follow Docker logs"
-	@echo "  make down      Stop Docker containers"
+	@echo "  make docker      Build + start Docker bridge"
+	@echo "  make docker-up   Start Docker bridge"
+	@echo "  make docker-down Stop Docker bridge"
+	@echo "  make logs        Follow Docker logs"
 	@echo ""
 	@echo "Cleanup:"
-	@echo "  make clean"
-	@echo "  make fclean"
-	@echo "  make re"
+	@echo "  make clean       Stop services + remove temporary files"
+	@echo "  make fclean      Also remove venv + IRC build + Docker image"
+	@echo "  make re          Full clean + local restart"
 	@echo ""
 
 
 # ============================================================
-# CHECK
+# BASIC CHECKS
 # ============================================================
 
 check:
@@ -74,20 +96,26 @@ check:
 	@test -f "requirements.txt" || \
 		(echo "[ERROR] requirements.txt not found"; exit 1)
 
+	@test -d "$(IRC_DIR)" || \
+		(echo "[ERROR] $(IRC_DIR)/ directory not found"; exit 1)
+
+	@test -f "$(IRC_DIR)/Makefile" || \
+		(echo "[ERROR] $(IRC_DIR)/Makefile not found"; exit 1)
+
 
 # ============================================================
 # PYTHON ENVIRONMENT
 # ============================================================
 
 setup: check
-	@if [ ! -d "$(VENV)" ]; then \
+	@if [ ! -x "$(PYTHON)" ]; then \
 		echo "[SETUP] Creating Python virtual environment..."; \
-		python3 -m venv $(VENV); \
+		python3 -m venv "$(VENV)"; \
 	else \
-		echo "[SETUP] Virtual environment already exists."; \
+		echo "[SETUP] Python virtual environment already exists."; \
 	fi
 
-	@echo "[SETUP] Installing Python dependencies..."
+	@echo "[SETUP] Installing dependencies..."
 	@$(PIP) install -r requirements.txt
 
 	@echo "[OK] Python environment ready."
@@ -97,81 +125,140 @@ setup: check
 # IRC SERVER
 # ============================================================
 
-build-irc:
-	@test -d "$(IRC_DIR)" || \
-		(echo "[ERROR] IRC directory not found"; exit 1)
-
+build-irc: check
 	@echo "[IRC] Building server..."
-	@$(MAKE) -C $(IRC_DIR)
+	@$(MAKE) -C "$(IRC_DIR)"
 
 	@test -x "$(IRC_BIN)" || \
-		(echo "[ERROR] IRC server executable not found"; exit 1)
+		(echo "[ERROR] $(IRC_BIN) was not generated"; exit 1)
 
 	@echo "[OK] IRC server built."
 
 
 start-irc: build-irc
-	@if [ -f "$(IRC_PID)" ] && kill -0 $$(cat $(IRC_PID)) 2>/dev/null; then \
-		echo "[IRC] Server already running (PID $$(cat $(IRC_PID)))."; \
-	else \
-		rm -f $(IRC_PID); \
-		echo "[IRC] Starting server on port $(IRC_PORT)..."; \
-		cd $(IRC_DIR) && \
-		./ircserv $(IRC_PORT) $(IRC_PASSWORD) > ../ircserv.log 2>&1 & \
-		echo $$! > $(IRC_PID); \
-		sleep 1; \
-		if kill -0 $$(cat $(IRC_PID)) 2>/dev/null; then \
-			echo "[OK] IRC server running (PID $$(cat $(IRC_PID)))."; \
+	@set -e; \
+	\
+	if [ -f "$(IRC_PID)" ]; then \
+		PID=$$(cat "$(IRC_PID)" 2>/dev/null || true); \
+		if [ -n "$$PID" ] && kill -0 "$$PID" 2>/dev/null; then \
+			echo "[IRC] Server already running (PID $$PID)."; \
+			exit 0; \
 		else \
-			echo "[ERROR] IRC server failed to start."; \
-			rm -f $(IRC_PID); \
-			exit 1; \
-		fi \
+			echo "[IRC] Removing stale PID file."; \
+			rm -f "$(IRC_PID)"; \
+		fi; \
+	fi; \
+	\
+	if command -v ss >/dev/null 2>&1 && \
+	   ss -ltn | awk '{print $$4}' | grep -Eq '(^|:)$(IRC_PORT)$$'; then \
+		echo "[IRC] Port $(IRC_PORT) is already listening."; \
+		echo "[IRC] Assuming an IRC server was started manually."; \
+		echo "[IRC] Make will NOT start or manage another one."; \
+		exit 0; \
+	fi; \
+	\
+	echo "[IRC] Starting server on port $(IRC_PORT)..."; \
+	cd "$(IRC_DIR)" && \
+	./ircserv "$(IRC_PORT)" "$(IRC_PASSWORD)" > "../$(IRC_LOG)" 2>&1 & \
+	PID=$$!; \
+	echo "$$PID" > "$(IRC_PID)"; \
+	sleep 1; \
+	\
+	if kill -0 "$$PID" 2>/dev/null; then \
+		echo "[OK] IRC server running (PID $$PID)."; \
+	else \
+		echo "[ERROR] IRC server failed to start."; \
+		echo "[ERROR] Check $(IRC_LOG)"; \
+		rm -f "$(IRC_PID)"; \
+		exit 1; \
 	fi
 
 
 stop-irc:
-	@if [ -f "$(IRC_PID)" ]; then \
-		PID=$$(cat $(IRC_PID)); \
-		if kill -0 $$PID 2>/dev/null; then \
-			echo "[IRC] Stopping server (PID $$PID)..."; \
-			kill $$PID; \
-			echo "[OK] IRC server stopped."; \
+	@set -e; \
+	if [ ! -f "$(IRC_PID)" ]; then \
+		echo "[IRC] No Make-managed IRC server to stop."; \
+		exit 0; \
+	fi; \
+	\
+	PID=$$(cat "$(IRC_PID)" 2>/dev/null || true); \
+	\
+	if [ -n "$$PID" ] && kill -0 "$$PID" 2>/dev/null; then \
+		echo "[IRC] Stopping Make-managed server (PID $$PID)..."; \
+		kill "$$PID"; \
+		\
+		for i in 1 2 3 4 5; do \
+			if ! kill -0 "$$PID" 2>/dev/null; then \
+				break; \
+			fi; \
+			sleep 1; \
+		done; \
+		\
+		if kill -0 "$$PID" 2>/dev/null; then \
+			echo "[WARN] IRC server did not stop gracefully."; \
+			echo "[WARN] PID $$PID was left running."; \
 		else \
-			echo "[IRC] PID file exists but process is not running."; \
+			echo "[OK] IRC server stopped."; \
 		fi; \
-		rm -f $(IRC_PID); \
 	else \
-		echo "[IRC] Server is not running."; \
-	fi
+		echo "[IRC] PID file was stale."; \
+	fi; \
+	\
+	rm -f "$(IRC_PID)"
 
 
 irc: start-irc
 
 
 # ============================================================
+# BRIDGE GUARDS
+# ============================================================
+
+check-docker-bridge:
+	@if command -v docker >/dev/null 2>&1 && \
+	   docker compose ps --status running --services 2>/dev/null | \
+	   grep -qx "$(DOCKER_SERVICE)"; then \
+		echo "[ERROR] Docker bridge is already running."; \
+		echo "[ERROR] Do not run local and Docker bridges together."; \
+		echo ""; \
+		echo "Stop Docker first with:"; \
+		echo "  make docker-down"; \
+		exit 1; \
+	fi
+
+
+check-local-bridge:
+	@if pgrep -f "$(BRIDGE_ABS)" >/dev/null 2>&1; then \
+		echo "[ERROR] A local bridge.py instance is already running."; \
+		echo "[ERROR] Starting Docker would create two Telegram getUpdates clients."; \
+		echo ""; \
+		echo "Stop the local bridge first."; \
+		exit 1; \
+	fi
+
+
+# ============================================================
 # LOCAL BRIDGE
 # ============================================================
 
-bridge: check
+bridge: check check-docker-bridge
 	@if [ ! -x "$(PYTHON)" ]; then \
-		echo "[ERROR] Python virtual environment not found."; \
-		echo "Run: make setup"; \
+		echo "[ERROR] Python environment not found."; \
+		echo "Run:"; \
+		echo "  make setup"; \
+		exit 1; \
+	fi
+
+	@if pgrep -f "$(BRIDGE_ABS)" >/dev/null 2>&1; then \
+		echo "[ERROR] bridge.py is already running locally."; \
 		exit 1; \
 	fi
 
 	@echo ""
-	@echo "[BRIDGE] Starting in..."
-	@sleep 1
-	@echo "3"
-	@sleep 1
-	@echo "2"
-	@sleep 1
-	@echo "1"
-	@sleep 1
-	@echo ""
+	@echo "[BRIDGE] Starting in $(START_DELAY) seconds..."
+	@sleep $(START_DELAY)
 
-	@$(PYTHON) $(BRIDGE)
+	@$(PYTHON) "$(BRIDGE)"
 
 
 run: check
@@ -179,6 +266,7 @@ run: check
 		$(MAKE) setup; \
 	fi
 
+	@$(MAKE) check-docker-bridge
 	@$(MAKE) start-irc
 	@$(MAKE) bridge
 
@@ -190,31 +278,110 @@ local: run
 # DOCKER
 # ============================================================
 
-build: check
-	@echo "[DOCKER] Building bridge..."
+docker-build: check
+	@command -v docker >/dev/null 2>&1 || \
+		(echo "[ERROR] Docker is not installed"; exit 1)
+
+	@docker compose version >/dev/null 2>&1 || \
+		(echo "[ERROR] Docker Compose is unavailable"; exit 1)
+
+	@echo "[DOCKER] Building bridge image..."
 	@$(COMPOSE) build
 
 
-up: check
+docker-up: check check-local-bridge
+	@command -v docker >/dev/null 2>&1 || \
+		(echo "[ERROR] Docker is not installed"; exit 1)
+
+	@if $(COMPOSE) ps --status running --services 2>/dev/null | \
+	    grep -qx "$(DOCKER_SERVICE)"; then \
+		echo "[DOCKER] Bridge is already running."; \
+		exit 0; \
+	fi
+
 	@echo "[DOCKER] Starting bridge..."
 	@$(COMPOSE) up -d
+
 	@echo "[OK] Docker bridge started."
 
 
-docker: build up
+docker-down:
+	@if command -v docker >/dev/null 2>&1 && \
+	   docker compose version >/dev/null 2>&1; then \
+		echo "[DOCKER] Stopping Compose stack..."; \
+		$(COMPOSE) down; \
+	else \
+		echo "[DOCKER] Docker Compose unavailable."; \
+	fi
+
+
+docker: check-local-bridge docker-build docker-up
 
 
 logs:
-	@$(COMPOSE) logs -f
+	@$(COMPOSE) logs -f "$(DOCKER_SERVICE)"
 
 
-down:
-	@echo "[DOCKER] Stopping containers..."
-	@$(COMPOSE) down
+down: docker-down
 
 
-restart: stop-irc
-	@$(COMPOSE) down 2>/dev/null || true
+# ============================================================
+# STATUS
+# ============================================================
+
+status:
+	@echo ""
+	@echo "Telegram <-> IRC Bridge status"
+	@echo "==============================="
+	@echo ""
+
+	@if [ -f "$(IRC_PID)" ]; then \
+		PID=$$(cat "$(IRC_PID)" 2>/dev/null || true); \
+		if [ -n "$$PID" ] && kill -0 "$$PID" 2>/dev/null; then \
+			echo "[IRC]    Make-managed server: RUNNING (PID $$PID)"; \
+		else \
+			echo "[IRC]    Make-managed PID: STALE"; \
+		fi; \
+	elif command -v ss >/dev/null 2>&1 && \
+	     ss -ltn | awk '{print $$4}' | grep -Eq '(^|:)$(IRC_PORT)$$'; then \
+		echo "[IRC]    External/manual server: RUNNING on $(IRC_PORT)"; \
+	else \
+		echo "[IRC]    STOPPED"; \
+	fi
+
+	@if pgrep -f "$(BRIDGE_ABS)" >/dev/null 2>&1; then \
+		echo "[LOCAL]  Bridge: RUNNING"; \
+	else \
+		echo "[LOCAL]  Bridge: STOPPED"; \
+	fi
+
+	@if command -v docker >/dev/null 2>&1 && \
+	   $(COMPOSE) ps --status running --services 2>/dev/null | \
+	   grep -qx "$(DOCKER_SERVICE)"; then \
+		echo "[DOCKER] Bridge: RUNNING"; \
+	else \
+		echo "[DOCKER] Bridge: STOPPED"; \
+	fi
+
+	@echo ""
+
+
+# ============================================================
+# STOP / RESTART
+# ============================================================
+
+stop:
+	@echo "[STOP] Stopping Make/Docker managed services..."
+	@$(MAKE) docker-down
+	@$(MAKE) stop-irc
+	@echo ""
+	@echo "[NOTE] A manually started ./start process is not killed automatically."
+	@echo "[NOTE] Stop it from its terminal with Ctrl+C."
+	@echo "[OK] Managed services stopped."
+
+
+restart:
+	@$(MAKE) stop
 	@$(MAKE) run
 
 
@@ -223,23 +390,28 @@ restart: stop-irc
 # ============================================================
 
 clean:
-	@echo "[CLEAN] Stopping services..."
-	@$(MAKE) stop-irc
-	@$(COMPOSE) down 2>/dev/null || true
+	@$(MAKE) stop
 	@rm -rf __pycache__
-	@rm -f ircserv.log
+	@rm -f "$(IRC_LOG)"
+	@echo "[OK] Temporary files removed."
 
 
 fclean: clean
 	@echo "[CLEAN] Removing Python environment..."
-	@rm -rf $(VENV)
+	@rm -rf "$(VENV)"
 
-	@echo "[CLEAN] Cleaning IRC build..."
+	@echo "[CLEAN] Cleaning IRC server..."
 	@if [ -d "$(IRC_DIR)" ]; then \
-		$(MAKE) -C $(IRC_DIR) fclean; \
+		$(MAKE) -C "$(IRC_DIR)" fclean; \
 	fi
 
-	@$(COMPOSE) down --rmi local --volumes --remove-orphans 2>/dev/null || true
+	@if command -v docker >/dev/null 2>&1 && \
+	   docker compose version >/dev/null 2>&1; then \
+		$(COMPOSE) down \
+			--rmi local \
+			--volumes \
+			--remove-orphans 2>/dev/null || true; \
+	fi
 
 	@echo "[OK] Full clean complete."
 

@@ -3,7 +3,6 @@
 import asyncio
 import hmac
 import os
-import asyncio
 import sys
 
 from dotenv import load_dotenv
@@ -37,14 +36,10 @@ IRC_NICK = os.getenv("IRC_NICK", "skeleton")
 
 
 if not TELEGRAM_TOKEN:
-    raise RuntimeError(
-        "TELEGRAM_BOT_TOKEN is not defined"
-    )
+    raise RuntimeError("TELEGRAM_BOT_TOKEN is not defined")
 
 if not TELEGRAM_AUTH_PASSWORD:
-    raise RuntimeError(
-        "TELEGRAM_AUTH_PASSWORD is not defined"
-    )
+    raise RuntimeError("TELEGRAM_AUTH_PASSWORD is not defined")
 
 
 # ============================================================
@@ -53,10 +48,12 @@ if not TELEGRAM_AUTH_PASSWORD:
 
 telegram_app = None
 
-# Utilisateurs Telegram authentifiés
+# Telegram users authenticated with /auth
 authorized_users = set()
 
 # user_id -> chat_id
+#
+# Only users present here receive IRC messages.
 subscriptions = {}
 
 
@@ -106,6 +103,44 @@ async def require_auth(update: Update) -> bool:
     return False
 
 
+async def broadcast_to_telegram(
+    text: str,
+    exclude_chat_id=None
+):
+    """
+    Send a message to every Telegram chat currently
+    subscribed to the bridge.
+
+    exclude_chat_id can be used to prevent sending the
+    message back to the Telegram user who originally sent it.
+    """
+
+    global telegram_app
+
+    if telegram_app is None:
+        return
+
+    # set() avoids sending the same message several times
+    # if several users happen to share the same Telegram chat.
+    chat_ids = set(subscriptions.values())
+
+    if exclude_chat_id is not None:
+        chat_ids.discard(exclude_chat_id)
+
+    for chat_id in chat_ids:
+        try:
+            await telegram_app.bot.send_message(
+                chat_id=chat_id,
+                text=text,
+            )
+
+        except Exception as ex:
+            print(
+                f"[TELEGRAM] Failed to send "
+                f"to chat {chat_id}: {ex}"
+            )
+
+
 # ============================================================
 # TELEGRAM COMMANDS
 # ============================================================
@@ -120,7 +155,6 @@ async def start_command(
             f"IRC channel: {IRC_CHANNEL}\n"
             "Use /help to see commands."
         )
-
         return
 
     await update.message.reply_text(
@@ -129,6 +163,7 @@ async def start_command(
         "Use:\n"
         "/auth <password>"
     )
+
 
 async def auth_command(
     update: Update,
@@ -176,12 +211,16 @@ async def auth_command(
         or str(user.id)
     )
 
-    print(f"[AUTH] {username} authenticated")
+    print(
+        f"[AUTH] {username} authenticated "
+        f"(user_id={user.id})"
+    )
 
     await update.message.reply_text(
         "Authentification réussie. ✅\n\n"
         "Utilise /join pour rejoindre le bridge IRC."
     )
+
 
 async def join_command(
     update: Update,
@@ -204,15 +243,25 @@ async def join_command(
 
     subscriptions[user.id] = chat.id
 
-    await update.message.reply_text(
-        f"Bridge rejoint. ✅\n"
-        f"Channel IRC : {IRC_CHANNEL}"
+    username = (
+        user.username
+        or user.first_name
+        or str(user.id)
     )
 
     print(
-        f"[BRIDGE] Telegram user {user.id} "
-        f"joined {IRC_CHANNEL}"
+        f"[BRIDGE] {username} joined "
+        f"{IRC_CHANNEL} "
+        f"(chat_id={chat.id})"
     )
+
+    await update.message.reply_text(
+        "Bridge rejoint. ✅\n"
+        f"Channel IRC : {IRC_CHANNEL}\n"
+        f"Utilisateurs Telegram connectés : "
+        f"{len(subscriptions)}"
+    )
+
 
 async def leave_command(
     update: Update,
@@ -234,15 +283,17 @@ async def leave_command(
 
     subscriptions.pop(user.id, None)
 
-    await update.message.reply_text(
-        f"Tu as quitté le bridge {IRC_CHANNEL}.\n"
-        "Tu restes authentifié et peux utiliser /join pour revenir."
-    )
-
     print(
         f"[BRIDGE] Telegram user {user.id} "
         f"left {IRC_CHANNEL}"
     )
+
+    await update.message.reply_text(
+        f"Tu as quitté le bridge {IRC_CHANNEL}.\n"
+        "Tu restes authentifié et peux utiliser "
+        "/join pour revenir."
+    )
+
 
 async def logout_command(
     update: Update,
@@ -259,17 +310,21 @@ async def logout_command(
         )
         return
 
+    # Leaving the bridge automatically
     subscriptions.pop(user.id, None)
+
+    # Removing authentication
     authorized_users.discard(user.id)
+
+    print(
+        f"[AUTH] Telegram user {user.id} logged out"
+    )
 
     await update.message.reply_text(
         "Déconnexion effectuée.\n"
         "Tu dois refaire /auth pour accéder au bridge."
     )
 
-    print(
-        f"[AUTH] Telegram user {user.id} logged out"
-    )
 
 async def ping_command(
     update: Update,
@@ -278,9 +333,7 @@ async def ping_command(
     if not await require_auth(update):
         return
 
-    await update.message.reply_text(
-        "Pong!"
-    )
+    await update.message.reply_text("Pong!")
 
 
 async def status_command(
@@ -306,13 +359,15 @@ async def status_command(
     await update.message.reply_text(
         "Bridge status\n\n"
         f"Authentication: yes\n"
-        f"Subscription: {'yes' if subscribed else 'no'}\n"
+        f"Subscription: "
+        f"{'yes' if subscribed else 'no'}\n"
         f"IRC: {irc_status}\n"
         f"Server: {IRC_HOST}:{IRC_PORT}\n"
         f"Channel: {IRC_CHANNEL}\n"
         f"IRC nick: {IRC_NICK}\n"
         f"Telegram users: {len(subscriptions)}"
     )
+
 
 async def channel_command(
     update: Update,
@@ -343,6 +398,7 @@ async def help_command(
         "/help - Afficher cette aide"
     )
 
+
 # ============================================================
 # TELEGRAM -> IRC
 # ============================================================
@@ -353,17 +409,7 @@ async def telegram_message(
 ):
     if not await require_auth(update):
         return
-    user = update.effective_user
 
-    if user is None:
-        return
-
-    if user.id not in subscriptions:
-        await update.message.reply_text(
-            "Tu es authentifié mais tu n'as pas rejoint le bridge.\n"
-            "Utilise /join."
-        )
-        return
     if not update.message:
         return
 
@@ -371,8 +417,17 @@ async def telegram_message(
         return
 
     user = update.effective_user
+    chat = update.effective_chat
 
-    if user is None:
+    if user is None or chat is None:
+        return
+
+    if user.id not in subscriptions:
+        await update.message.reply_text(
+            "Tu es authentifié mais tu n'as pas "
+            "rejoint le bridge.\n"
+            "Utilise /join."
+        )
         return
 
     username = (
@@ -388,17 +443,24 @@ async def telegram_message(
         f"{username}: {message}"
     )
 
+    # --------------------------------------------------------
+    # Send to IRC
+    # --------------------------------------------------------
+
     if not irc_is_connected():
         await update.message.reply_text(
             "IRC server is currently unavailable."
         )
-
         return
 
     try:
+        irc_text = (
+            f"[Telegram] {username}: {message}"
+        )
+
         await irc_bot.sendmsg(
             IRC_CHANNEL,
-            f"[Telegram] {username}: {message}"
+            irc_text
         )
 
     except Exception as ex:
@@ -410,6 +472,20 @@ async def telegram_message(
             "Unable to send the message to IRC."
         )
 
+        return
+
+    # --------------------------------------------------------
+    # Telegram -> other Telegram users
+    #
+    # IRC usually does not send the bot its own PRIVMSG back.
+    # Therefore we fan-out the message ourselves.
+    # --------------------------------------------------------
+
+    await broadcast_to_telegram(
+        f"[Telegram] {username}: {message}",
+        exclude_chat_id=chat.id,
+    )
+
 
 # ============================================================
 # IRC -> TELEGRAM
@@ -420,48 +496,33 @@ async def irc_message(
     target: str,
     message: str
 ):
-    global telegram_app
-
     print(
         f"[IRC -> TELEGRAM] "
         f"{nick} -> {target}: {message}"
     )
 
-    # Seulement le channel bridgé
+    # Ignore messages from another IRC channel
     if target != IRC_CHANNEL:
         return
 
-    # Empêche le bridge de récupérer ses propres messages
-    # Telegram -> IRC -> Telegram
+    # Important loop protection.
+    #
+    # Telegram -> skeleton -> IRC
+    #
+    # must NOT become:
+    #
+    # Telegram -> IRC -> Telegram -> IRC ...
+    #
     if nick == IRC_NICK:
         return
 
-    if telegram_app is None:
-        return
-
-    # Plusieurs utilisateurs peuvent être abonnés.
-    # set() évite d'envoyer plusieurs fois au même chat.
-    chat_ids = set(
-        subscriptions.values()
+    await broadcast_to_telegram(
+        f"[IRC] {nick}: {message}"
     )
 
-    for chat_id in chat_ids:
-        try:
-            await telegram_app.bot.send_message(
-                chat_id=chat_id,
-                text=f"[IRC] {nick}: {message}"
-            )
 
-        except Exception as ex:
-            print(
-                f"[TELEGRAM] Failed to send "
-                f"to chat {chat_id}: {ex}"
-            )
-
-
-# Branch IRC -> Telegram
+# Link the IRC client to the Telegram bridge
 irc_bot.on_message = irc_message
-
 
 
 # ============================================================
@@ -485,10 +546,6 @@ CLEAR_SCREEN = "\033[2J\033[H"
 
 
 async def startup_animation():
-    """
-    Small startup animation displayed while the bridge starts.
-    """
-
     loading_messages = [
         "Initializing bridge",
         "Preparing Telegram",
@@ -499,41 +556,48 @@ async def startup_animation():
     frames = 20
 
     for i in range(frames):
-        # Clear terminal and move cursor to top-left
         sys.stdout.write(CLEAR_SCREEN)
 
         print(BOAT)
-
-        # Animate water
-        print(WAVE_FRAMES[i % len(WAVE_FRAMES)])
-
+        print(
+            WAVE_FRAMES[
+                i % len(WAVE_FRAMES)
+            ]
+        )
         print()
 
         message = loading_messages[
-            min(i // 5, len(loading_messages) - 1)
+            min(
+                i // 5,
+                len(loading_messages) - 1
+            )
         ]
 
         dots = "." * ((i % 3) + 1)
 
-        print(f"        {message}{dots}")
+        print(
+            f"        {message}{dots}"
+        )
 
         sys.stdout.flush()
 
         await asyncio.sleep(0.10)
 
-    # Final clean screen
     sys.stdout.write(CLEAR_SCREEN)
 
     print(BOAT)
     print(WAVE_FRAMES[0])
     print()
 
-    print("        Telegram <-> IRC Bridge")
-    print("        ========================")
+    print(
+        "        Telegram <-> IRC Bridge"
+    )
+    print(
+        "        ========================"
+    )
     print()
 
     sys.stdout.flush()
-
 
 
 # ============================================================
@@ -545,13 +609,21 @@ async def main():
 
     await startup_animation()
 
-    print("==============================")
-    print(" Telegram <-> IRC Bridge")
-    print("==============================")
-    print(f"IRC server : {IRC_HOST}:{IRC_PORT}")
-    print(f"IRC channel: {IRC_CHANNEL}")
-    print(f"IRC nick   : {IRC_NICK}")
-    print("==============================")
+    print(
+        f"IRC server  : "
+        f"{IRC_HOST}:{IRC_PORT}"
+    )
+    print(
+        f"IRC channel : {IRC_CHANNEL}"
+    )
+    print(
+        f"IRC nick    : {IRC_NICK}"
+    )
+    print()
+
+    # --------------------------------------------------------
+    # Telegram
+    # --------------------------------------------------------
 
     telegram_app = (
         ApplicationBuilder()
@@ -574,15 +646,24 @@ async def main():
     )
 
     telegram_app.add_handler(
-        CommandHandler("join", join_command)
+        CommandHandler(
+            "join",
+            join_command
+        )
     )
 
     telegram_app.add_handler(
-        CommandHandler("leave", leave_command)
+        CommandHandler(
+            "leave",
+            leave_command
+        )
     )
 
     telegram_app.add_handler(
-        CommandHandler("logout", logout_command)
+        CommandHandler(
+            "logout",
+            logout_command
+        )
     )
 
     telegram_app.add_handler(
@@ -615,18 +696,21 @@ async def main():
 
     telegram_app.add_handler(
         MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
+            filters.TEXT
+            & ~filters.COMMAND,
             telegram_message
         )
     )
 
     await telegram_app.initialize()
-
     await telegram_app.start()
-
     await telegram_app.updater.start_polling()
 
-    print("[TELEGRAM] Bot connected")
+    print("[✓] Telegram connected")
+
+    # --------------------------------------------------------
+    # IRC
+    # --------------------------------------------------------
 
     try:
         await irc_bot.connect()
@@ -636,12 +720,18 @@ async def main():
             "[BRIDGE] Shutting down..."
         )
 
-        await telegram_app.updater.stop()
+        if telegram_app.updater.running:
+            await telegram_app.updater.stop()
 
-        await telegram_app.stop()
+        if telegram_app.running:
+            await telegram_app.stop()
 
         await telegram_app.shutdown()
 
+
+# ============================================================
+# ENTRY POINT
+# ============================================================
 
 if __name__ == "__main__":
     try:

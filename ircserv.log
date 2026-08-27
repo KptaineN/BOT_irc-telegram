@@ -1,0 +1,32 @@
+[94mServer listening on port [37m6667[0m
+[94mNew client connected: fd [37m4[0m
+[client fd 4] command received: "PASS 42"
+[client fd 4] command received: "NICK bot_skeleton"
+[client fd 4] command received: "USER skelly 0 * :Telegram IRC Bridge"
+[client fd 4] command received: "JOIN #42"
+[94mNew client connected: fd [37m5[0m
+[client fd 5] command received: "PASS 42"
+[client fd 5] command received: "NICK bot_skeleton"
+[client fd 5] command received: "USER skelly 0 * :Telegram IRC Bridge"
+[client fd 5] command received: "NICK bot_skeleton_"
+[client fd 5] command received: "JOIN #42"
+[91mClient disconnected: fd [37m5[0m
+[91mClient disconnected: fd [37m4[0m
+[94mNew client connected: fd [37m4[0m
+[client fd 4] command received: "PASS 42"
+[client fd 4] command received: "NICK bot_skeleton"
+[client fd 4] command received: "USER skelly 0 * :Telegram IRC Bridge"
+[client fd 4] command received: "JOIN #42"
+[client fd 4] command received: "PRIVMSG #42 :[Telegram] Nkief57: Yo pd"
+[client fd 4] command received: "PRIVMSG #42 :[Telegram] Jules: yo grosse merde"
+[94mNew client connected: fd [37m5[0m
+[client fd 5] command received: "CAP LS 302"
+[client fd 5] command received: "JOIN :"
+[client fd 5] command received: "PASS 42"
+[client fd 5] command received: "NICK Marwin"
+[client fd 5] command received: "USER kiefer kiefer localhost :Kiefer"
+[client fd 5] command received: "MODE Marwin +i"
+[client fd 5] command received: "PING ircserv"
+[client fd 5] command received: "QUIT :Lost terminal"
+[91mClient disconnected: fd [37m5[0m
+[91mClient disconnected: fd [37m4[0m

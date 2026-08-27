@@ -3,17 +3,28 @@
 set -e
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$DIR"
+
 PYTHON="$DIR/.venv/bin/python"
 BRIDGE="$DIR/bridge.py"
 
-if [ ! -x "$PYTHON" ]; then
-    echo "Erreur: environnement virtuel introuvable."
-    echo "Crée-le avec : python3 -m venv .venv"
+if docker compose ps --status running --services 2>/dev/null \
+    | grep -qx "bridge"; then
+    echo "[ERROR] Docker bridge is already running."
+    echo "[ERROR] Stop it first with:"
+    echo "  make docker-down"
     exit 1
 fi
 
-if [ ! -f "$BRIDGE" ]; then
-    echo "Erreur: bridge.py introuvable."
+if pgrep -f "$BRIDGE" >/dev/null 2>&1; then
+    echo "[ERROR] bridge.py is already running."
+    exit 1
+fi
+
+if [ ! -x "$PYTHON" ]; then
+    echo "[ERROR] .venv not found."
+    echo "Run:"
+    echo "  make setup"
     exit 1
 fi
 
