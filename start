@@ -1,0 +1,20 @@
+#!/bin/bash
+
+set -e
+
+DIR="$(cd "$(dirname "$0")" && pwd)"
+PYTHON="$DIR/.venv/bin/python"
+BRIDGE="$DIR/bridge.py"
+
+if [ ! -x "$PYTHON" ]; then
+    echo "Erreur: environnement virtuel introuvable."
+    echo "Crée-le avec : python3 -m venv .venv"
+    exit 1
+fi
+
+if [ ! -f "$BRIDGE" ]; then
+    echo "Erreur: bridge.py introuvable."
+    exit 1
+fi
+
+exec "$PYTHON" "$BRIDGE"

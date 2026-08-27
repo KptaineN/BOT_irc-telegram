@@ -1,0 +1,12 @@
+************************************************
+| Welcome to ft_irc Server!                    |
+|                                              |
+|  - Succesfull registration                   |
+|                                              |
+|                                              |
+| Rules:                                       |
+| 1. Be respectful to other peers.             |
+| 2. No flooding or spamming PRIVMSG.          |
+|                                              |
+| Type HELP to see available commands.         |
+|______________________________________________|

@@ -1,0 +1,8 @@
+services:
+  bridge:
+    build: .
+    container_name: telegram-irc-bridge
+    restart: unless-stopped
+
+    env_file:
+      - .env
