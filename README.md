@@ -1,3 +1,8 @@
+<p align="center">
+  <img src="https://media.giphy.com/media/v1.Y2lkPWVjZjA1ZTQ3OGI3OHFzNXl1bG1wMDVjNzU3ZHIzaXB0ZzdheWRlejdreHRwdWVwdyZlcD12MV9naWZzX3NlYXJjaCZjdD1n/15L4GgZxncHh6/giphy.gif"/>
+</p>
+
+
 # Telegram ↔ IRC Bridge
 
 Passerelle bidirectionnelle entre Telegram et un serveur IRC (ft_irc), développée en Python. Le bridge connecte un bot Telegram à un client IRC (irc_bot.py) qui communique avec le serveur ft_irc (C++98) sur le port 6667, permettant à des utilisateurs Telegram autorisés d'échanger avec un channel IRC sans utiliser un client IRC.
